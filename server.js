@@ -24,7 +24,7 @@ const TOKENS_FROM_ENV = (process.env.TOKEN_LIST || '')
 
 // 2) أو مباشرة هنا (هاردكود). عدّل المصفوفة وأزل الأمثلة:
 const ALLOWED_TOKENS_HARDCODED = [
-  // "alpha",
+   "mouad",
   // "beta",
   // "team-123"
 ];
