@@ -15,6 +15,10 @@ const TOKENS_FROM_ENV = (process.env.TOKEN_LIST || '')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
+const ALLOWED_TOKENS_HARDCODED = [
+  "mouad"
+];
+
 const ALLOWED = new Set(TOKENS_FROM_ENV);
 
 // Rooms: token -> Set(ws)
