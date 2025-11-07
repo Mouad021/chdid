@@ -15,41 +15,42 @@ const TOKENS_FROM_ENV = (process.env.TOKEN_LIST || '')
   .map(s => s.trim())
   .filter(Boolean);
 
-// مثال هاردكود — اكتب التوكنات هنا (إن رغبت بذلك).
-// إذا قمت بملء TOKEN_LIST في .env فسيتم استخدام TOKEN_LIST أولاً.
 const ALLOWED_TOKENS_HARDCODED = [
    "mouad",
   // "team-1",
-  // "alpha"
 ];
 
-// القاعدة: إذا وُجد TOKEN_LIST في البيئة فسوف نستخدمه، وإلا نستخدم الهاردكود.
+// الاختيار الفعلي: لو وُجدت في البيئة نستخدمها، وإلا نستخدم الهاردكود
 const ALLOWED = new Set(TOKENS_FROM_ENV.length ? TOKENS_FROM_ENV : ALLOWED_TOKENS_HARDCODED);
 
-// ---------------------------------------------------------------------------
+// ---------- 👆 انتهى مكان وضع التوكنات 👆 ----------
 
-/**
- * بيانات غرف/اتصالات:
- * rooms: Map< token, Set<ws> >
- */
+// token(room) -> Set(ws)
 const rooms = new Map();
 
-function ensureRoom(name){
-  if (!rooms.has(name)) rooms.set(name, new Set());
-  return rooms.get(name);
-}
+const ensureRoom = (room) => {
+  if (!rooms.has(room)) rooms.set(room, new Set());
+  return rooms.get(room);
+};
 
-function roomCount(name){
-  return rooms.get(name)?.size || 0;
-}
+const roomCount = (room) => (rooms.get(room)?.size || 0);
 
-function joinRoom(ws, name){
-  const set = ensureRoom(name);
+const broadcast = (room, obj, except = null) => {
+  const set = rooms.get(room);
+  if (!set) return;
+  const data = JSON.stringify(obj);
+  for (const c of set) {
+    if (c.readyState === 1 && c !== except) c.send(data);
+  }
+};
+
+function joinRoom(ws, room) {
+  const set = ensureRoom(room);
   set.add(ws);
-  ws.room = name;
+  ws.room = room;
 }
 
-function leaveRoom(ws){
+function leaveRoom(ws) {
   const r = ws.room;
   if (!r) return;
   const set = rooms.get(r);
@@ -60,17 +61,7 @@ function leaveRoom(ws){
   ws.room = null;
 }
 
-function broadcast(room, obj, except = null){
-  const set = rooms.get(room); if (!set) return;
-  const data = JSON.stringify(obj);
-  for (const c of set) {
-    if (c.readyState === 1 && c !== except) {
-      c.send(data);
-    }
-  }
-}
-
-function pushStats(room){
+function pushStats(room) {
   broadcast(room, { type: 'room_stats', room, count: roomCount(room) });
 }
 
@@ -79,34 +70,22 @@ wss.on('connection', (ws) => {
   ws.on('pong', () => { ws.isAlive = true; });
 
   ws.on('message', (buf) => {
-    let msg;
-    try { msg = JSON.parse(buf.toString()); } catch { return; }
+    let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
 
     if (msg.type === 'join') {
       const token = String(msg.token || '').trim();
       if (!token) {
         ws.send(JSON.stringify({ type: 'error', error: 'missing-token' }));
-        try { ws.close(1008, 'missing token'); } catch {}
         return;
       }
       if (!ALLOWED.has(token)) {
-        // توكن غير مصرح به — نخبر العميل ونقفل الاتصال
         ws.send(JSON.stringify({ type: 'error', error: 'forbidden-token' }));
         try { ws.close(1008, 'forbidden token'); } catch {}
         return;
       }
-
-      // ناجح: انضم إلى غرفة التوكن
-      joinRoom(ws, token);
+      joinRoom(ws, token);                 // token == room
       ws.send(JSON.stringify({ type: 'joined', room: token, count: roomCount(token) }));
       pushStats(token);
-      return;
-    }
-
-    if (msg.type === 'leave') {
-      const r = ws.room;
-      leaveRoom(ws);
-      if (r) pushStats(r);
       return;
     }
 
@@ -122,29 +101,21 @@ wss.on('connection', (ws) => {
     }
   });
 
-  ws.on('close', () => {
-    const r = ws.room;
-    leaveRoom(ws);
-    if (r) pushStats(r);
-  });
+  ws.on('close', () => { const r = ws.room; leaveRoom(ws); if (r) pushStats(r); });
 });
 
-// تنظيف الاتصالات الميتة بالنبض
+// فحص نبضات/تنظيف اتصالات ميتة
 setInterval(() => {
   for (const ws of wss.clients) {
-    if (!ws.isAlive) {
-      try { ws.terminate(); } catch {}
-      continue;
-    }
+    if (!ws.isAlive) { try { ws.terminate(); } catch {} continue; }
     ws.isAlive = false;
     try { ws.ping(); } catch {}
   }
 }, HEARTBEAT_SECONDS * 1000);
 
-// نقطة صحّة لمراقبة الحالة
+// صحة سريعة
 app.get('/health', (_req, res) => {
-  const roomsObj = {};
-  for (const [name, set] of rooms) roomsObj[name] = set.size;
+  const roomsObj = {}; for (const [name, set] of rooms) roomsObj[name] = set.size;
   res.json({ ok: true, clients: wss.clients.size, rooms: roomsObj, allowed: Array.from(ALLOWED) });
 });
 
