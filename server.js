@@ -1,3 +1,4 @@
+// Token-locked WebSocket broadcast server
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
@@ -7,111 +8,87 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
-// إعدادات
 const PORT = process.env.PORT || 8080;
 const HEARTBEAT_SECONDS = Number(process.env.HEARTBEAT_SECONDS || 30);
 
+// === PLACE TOKEN(S) HERE ===
+// Option 1 (recommended): via environment variable
+//   TOKEN_LIST=mouad,teamA,xyz
 const TOKENS_FROM_ENV = (process.env.TOKEN_LIST || '')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
 
-
+// Option 2: hardcode list here if you prefer:
 const ALLOWED_TOKENS_HARDCODED = [
-   "mouad",
-  // "team123"
+  "mouad",
 ];
 
-// أي واحدة موجودة سيتم اعتمادها
-const ALLOWED = new Set(
-  TOKENS_FROM_ENV.length > 0 ? TOKENS_FROM_ENV : ALLOWED_TOKENS_HARDCODED
-);
+const ALLOWED = new Set(TOKENS_FROM_ENV.length ? TOKENS_FROM_ENV : ALLOWED_TOKENS_HARDCODED);
 
-// الغرف (كل token = غرفة)
-const rooms = new Map(); // token -> Set<WebSocket>
+// room = token
+const rooms = new Map();
+const ensureRoom = (r)=>{ if(!rooms.has(r)) rooms.set(r,new Set()); return rooms.get(r); };
+const count = (r)=> rooms.get(r)?.size || 0;
 
-function ensureRoom(token){
-  if(!rooms.has(token)) rooms.set(token, new Set());
-  return rooms.get(token);
-}
-function count(token){
-  return rooms.get(token)?.size || 0;
-}
-
-// بث رسالة داخل غرفة معينة
-function broadcast(token, data, except = null){
-  const room = rooms.get(token);
-  if(!room) return;
-  const msg = JSON.stringify(data);
-  for(const client of room){
-    if(client.readyState === 1 && client !== except){
-      client.send(msg);
-    }
+function broadcast(r,obj,except){
+  const set=rooms.get(r); if(!set) return;
+  const data=JSON.stringify(obj);
+  for(const c of set){
+    if(c.readyState===1 && c!==except) c.send(data);
   }
 }
 
-// اتصال جديد
-wss.on('connection', ws => {
-  ws.isAlive = true;
-  ws.on('pong', () => ws.isAlive = true);
+wss.on('connection',ws=>{
+  ws.isAlive=true;
+  ws.on('pong',()=>ws.isAlive=true);
 
-  ws.on('message', raw => {
-    let msg;
-    try { msg = JSON.parse(raw.toString()); } catch { return; }
+  ws.on('message',buf=>{
+    let msg; try{msg=JSON.parse(buf.toString())}catch{return};
 
-    // الانضمام إلى غرفة
-    if(msg.type === 'join'){
-      const token = (msg.token || '').trim();
+    if(msg.type==="join"){
+      const token=String(msg.token||"").trim();
       if(!token || !ALLOWED.has(token)){
-        ws.send(JSON.stringify({ type:"error", error:"forbidden-token" }));
-        try{ ws.close(); }catch{}
+        ws.send(JSON.stringify({type:"error",error:"forbidden-token"}));
+        try{ws.close()}catch{}
         return;
       }
       ensureRoom(token).add(ws);
-      ws.room = token;
-      ws.send(JSON.stringify({ type:"joined", room:token, count:count(token) }));
-      broadcast(token, { type:"room_stats", room:token, count:count(token) });
+      ws.room=token;
+      ws.send(JSON.stringify({type:"joined",room:token,count:count(token)}));
+      broadcast(token,{type:"room_stats",room:token,count:count(token)});
       return;
     }
 
-    // بث من متصفح → بقية المتصفحات
-    if(msg.type === 'broadcast' && ws.room){
-      broadcast(ws.room, { type:"message", payload:msg.payload, at:Date.now() }, ws);
-      return;
+    if(msg.type==="broadcast" && ws.room){
+      broadcast(ws.room,{type:"message",payload:msg.payload,at:Date.now()},ws);
+    }
+
+    if(msg.type==="ping"){
+      try{ ws.send(JSON.stringify({ type:'pong' })); }catch{}
     }
   });
 
-  ws.on('close', () => {
-    const token = ws.room;
-    if(!token) return;
-    const room = rooms.get(token);
-    if(room){
-      room.delete(ws);
-      if(room.size === 0) rooms.delete(token);
-      broadcast(token, { type:"room_stats", room:token, count:count(token) });
-    }
+  ws.on('close',()=>{
+    const r=ws.room; if(!r) return;
+    rooms.get(r)?.delete(ws);
+    if(count(r)===0) rooms.delete(r);
+    broadcast(r,{type:"room_stats",room:r,count:count(r)});
   });
 });
 
-// فحص نبضات الاتصال
-setInterval(() => {
+setInterval(()=>{
   for(const ws of wss.clients){
-    if(!ws.isAlive){
-      try{ ws.terminate(); }catch{}
-      continue;
-    }
-    ws.isAlive = false;
-    try{ ws.ping(); }catch{}
+    if(!ws.isAlive){try{ws.terminate()}catch{}; continue}
+    ws.isAlive=false;
+    try{ws.ping()}catch{}
   }
-}, HEARTBEAT_SECONDS * 1000);
+},HEARTBEAT_SECONDS*1000);
 
-// فحص سريع للاتصال
-app.get('/health', (req, res) => {
-  const info = {};
-  for(const [token,set] of rooms) info[token] = set.size;
-  res.json({ ok:true, clients:wss.clients.size, rooms:info, allowed:[...ALLOWED] });
+app.get('/health',(req,res)=>{
+  const obj={};
+  for(const [r,set] of rooms) obj[r]=set.size;
+  res.json({ok:true,clients:wss.clients.size,rooms:obj,allowed:[...ALLOWED]});
 });
 
-server.listen(PORT, () => {
-  console.log("✅ WebSocket Token Server Running on port: " + PORT);
-});
+server.listen(PORT,()=>console.log("loginall-token-server running on :"+PORT));
