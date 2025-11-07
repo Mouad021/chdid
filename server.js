@@ -1,7 +1,3 @@
-// ========================= p2p-token-locked server =========================
-// حماية بالتوكن: لا يُسمح بالاتصال إلا إذا كان token ضمن القائمة المسموح بها.
-// ضع التوكنات في .env (TOKEN_LIST) أو مباشرة في المصفوفة ALLOWED_TOKENS_HARDCODED.
-// ===========================================================================
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
@@ -14,88 +10,83 @@ const wss = new WebSocketServer({ server });
 const PORT = process.env.PORT || 8080;
 const HEARTBEAT_SECONDS = Number(process.env.HEARTBEAT_SECONDS || 30);
 
-// ---------------------------------------------------------------------------
-// 👇👇👇 مكان وضع التوكنات 👇👇👇
-// 1) عبر .env: TOKEN_LIST=alpha,beta,team-123
-const TOKENS_FROM_ENV = (process.env.TOKEN_LIST || '')
-  .split(',')
+const TOKENS_FROM_ENV = (process.env.TOKEN_LIST || "")
+  .split(",")
   .map(s => s.trim())
   .filter(Boolean);
 
-// 2) أو مباشرة هنا (هاردكود)
+
 const ALLOWED_TOKENS_HARDCODED = [
    "mouad",
-  // "beta",
-  // "team-123"
+  // "team1",
+  // "xyz"
 ];
 
-// القائمة المستخدمة فعليًا: إذا وُجدت في .env نستخدمها، وإلا الهاردكود
-const ALLOWED = new Set(TOKENS_FROM_ENV.length ? TOKENS_FROM_ENV : ALLOWED_TOKENS_HARDCODED);
-// 👆👆👆 انتهى مكان وضع التوكنات 👆👆👆
+// إذا كانت .env تحتوي توكنات → تُستخدم
+// إذا كانت فارغة → نستخدم التي هنا فوق
+const ALLOWED = new Set(
+  TOKENS_FROM_ENV.length ? TOKENS_FROM_ENV : ALLOWED_TOKENS_HARDCODED
+);
 // ---------------------------------------------------------------------------
 
-// token(room) -> Set(ws)
+// كل token = غرفة
 const rooms = new Map();
-const ensureRoom = (room) => (rooms.has(room) ? rooms : rooms.set(room, new Set()), rooms.get(room));
-const roomCount = (room) => (rooms.get(room)?.size || 0);
+const room = token => (rooms.has(token) ? rooms : rooms.set(token, new Set()), rooms.get(token));
+const count = token => (rooms.get(token)?.size || 0);
 
-const broadcast = (room, obj, except=null) => {
-  const set = rooms.get(room); if (!set) return;
-  const data = JSON.stringify(obj);
-  for (const c of set) if (c.readyState === 1 && c !== except) c.send(data);
-};
-
-function joinRoom(ws, room){
-  const set = ensureRoom(room);
-  set.add(ws);
-  ws.room = room;
+// إرسال رسالة لكل أعضاء الغرفة
+function broadcast(token, obj, except = null) {
+  const set = rooms.get(token);
+  if (!set) return;
+  const msg = JSON.stringify(obj);
+  for (const c of set) {
+    if (c.readyState === 1 && c !== except) c.send(msg);
+  }
 }
 
-function leaveRoom(ws){
-  const r = ws.room; if (!r) return;
-  const set = rooms.get(r);
-  if (set) { set.delete(ws); if (set.size === 0) rooms.delete(r); }
-  ws.room = null;
-}
-
-function pushStats(room){
-  broadcast(room, { type:'room_stats', room, count: roomCount(room) });
-}
-
-wss.on('connection', (ws) => {
+wss.on("connection", ws => {
   ws.isAlive = true;
-  ws.on('pong', () => { ws.isAlive = true; });
+  ws.on("pong", () => (ws.isAlive = true));
 
-  ws.on('message', (buf) => {
-    let msg; try { msg = JSON.parse(buf.toString()); } catch { return; }
+  ws.on("message", data => {
+    let msg;
+    try { msg = JSON.parse(data.toString()); } catch { return; }
 
-    if (msg.type === 'join') {
-      const token = String(msg.token || '').trim();
-      if (!token) { ws.send(JSON.stringify({ type:'error', error:'missing-token' })); return; }
-      if (!ALLOWED.has(token)) {
-        ws.send(JSON.stringify({ type:'error', error:'forbidden-token' }));
-        try { ws.close(1008, 'forbidden token'); } catch {}
+    // انضمام المتصفح لغرفة حسب التوكن
+    if (msg.type === "join") {
+      const token = String(msg.token || "").trim();
+      if (!token || !ALLOWED.has(token)) {
+        ws.send(JSON.stringify({ type: "error", error: "forbidden-token" }));
+        try { ws.close(); } catch {}
         return;
       }
-      const room = token; // token == room
-      joinRoom(ws, room);
-      ws.send(JSON.stringify({ type:'joined', room, count: roomCount(room) }));
-      pushStats(room);
+      room(token).add(ws);
+      ws.room = token;
+      ws.send(JSON.stringify({ type: "joined", room: token, count: count(token) }));
+      broadcast(token, { type: "room_stats", room: token, count: count(token) });
       return;
     }
 
-    if (msg.type === 'ping') { try { ws.send(JSON.stringify({ type:'pong' })); } catch {} return; }
-
-    if (msg.type === 'broadcast') {
-      if (!ws.room) return;
-      broadcast(ws.room, { type:'message', payload: msg.payload, at: Date.now() }, ws);
+    // استلام بث من أحد المتصفحات → إرساله للكل
+    if (msg.type === "broadcast" && ws.room) {
+      broadcast(ws.room, { type: "message", payload: msg.payload, at: Date.now() }, ws);
       return;
     }
   });
 
-  ws.on('close', () => { const r = ws.room; leaveRoom(ws); if (r) pushStats(r); });
+  ws.on("close", () => {
+    const token = ws.room;
+    if (!token) return;
+    const set = rooms.get(token);
+    if (set) {
+      set.delete(ws);
+      if (set.size === 0) rooms.delete(token);
+    }
+    broadcast(token, { type: "room_stats", room: token, count: count(token) });
+  });
 });
 
+// فحص وإغلاق الاتصالات الميتة
 setInterval(() => {
   for (const ws of wss.clients) {
     if (!ws.isAlive) { try { ws.terminate(); } catch {} continue; }
@@ -104,9 +95,11 @@ setInterval(() => {
   }
 }, HEARTBEAT_SECONDS * 1000);
 
-app.get('/health', (_req, res) => {
-  const roomsObj = {}; for (const [name, set] of rooms) roomsObj[name] = set.size;
-  res.json({ ok: true, clients: wss.clients.size, rooms: roomsObj, allowed: Array.from(ALLOWED) });
+// فحص سريع
+app.get("/health", (req, res) => {
+  const r = {};
+  for (const [name, set] of rooms) r[name] = set.size;
+  res.json({ ok: true, clients: wss.clients.size, rooms: r, allowed: [...ALLOWED] });
 });
 
-server.listen(PORT, () => console.log('p2p-token-locked listening on :' + PORT));
+server.listen(PORT, () => console.log("Server running on port " + PORT));
