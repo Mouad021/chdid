@@ -1,3 +1,7 @@
+// ========================= p2p-token-locked server =========================
+// حماية بالتوكن: لا يُسمح بالاتصال إلا إذا كان token ضمن القائمة المسموح بها.
+// ضع التوكنات في .env (TOKEN_LIST) أو مباشرة في المصفوفة ALLOWED_TOKENS_HARDCODED.
+// ===========================================================================
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
@@ -10,59 +14,52 @@ const wss = new WebSocketServer({ server });
 const PORT = process.env.PORT || 8080;
 const HEARTBEAT_SECONDS = Number(process.env.HEARTBEAT_SECONDS || 30);
 
+// ---------------------------------------------------------------------------
+// 👇👇👇 مكان وضع التوكنات 👇👇👇
+// 1) عبر .env: TOKEN_LIST=alpha,beta,team-123
 const TOKENS_FROM_ENV = (process.env.TOKEN_LIST || '')
   .split(',')
   .map(s => s.trim())
   .filter(Boolean);
 
+// 2) أو مباشرة هنا (هاردكود)
 const ALLOWED_TOKENS_HARDCODED = [
-   "mouad",
-  // "team-1",
+  // "alpha",
+  // "beta",
+  // "team-123"
 ];
 
-// الاختيار الفعلي: لو وُجدت في البيئة نستخدمها، وإلا نستخدم الهاردكود
+// القائمة المستخدمة فعليًا: إذا وُجدت في .env نستخدمها، وإلا الهاردكود
 const ALLOWED = new Set(TOKENS_FROM_ENV.length ? TOKENS_FROM_ENV : ALLOWED_TOKENS_HARDCODED);
-
-// ---------- 👆 انتهى مكان وضع التوكنات 👆 ----------
+// 👆👆👆 انتهى مكان وضع التوكنات 👆👆👆
+// ---------------------------------------------------------------------------
 
 // token(room) -> Set(ws)
 const rooms = new Map();
-
-const ensureRoom = (room) => {
-  if (!rooms.has(room)) rooms.set(room, new Set());
-  return rooms.get(room);
-};
-
+const ensureRoom = (room) => (rooms.has(room) ? rooms : rooms.set(room, new Set()), rooms.get(room));
 const roomCount = (room) => (rooms.get(room)?.size || 0);
 
-const broadcast = (room, obj, except = null) => {
-  const set = rooms.get(room);
-  if (!set) return;
+const broadcast = (room, obj, except=null) => {
+  const set = rooms.get(room); if (!set) return;
   const data = JSON.stringify(obj);
-  for (const c of set) {
-    if (c.readyState === 1 && c !== except) c.send(data);
-  }
+  for (const c of set) if (c.readyState === 1 && c !== except) c.send(data);
 };
 
-function joinRoom(ws, room) {
+function joinRoom(ws, room){
   const set = ensureRoom(room);
   set.add(ws);
   ws.room = room;
 }
 
-function leaveRoom(ws) {
-  const r = ws.room;
-  if (!r) return;
+function leaveRoom(ws){
+  const r = ws.room; if (!r) return;
   const set = rooms.get(r);
-  if (set) {
-    set.delete(ws);
-    if (set.size === 0) rooms.delete(r);
-  }
+  if (set) { set.delete(ws); if (set.size === 0) rooms.delete(r); }
   ws.room = null;
 }
 
-function pushStats(room) {
-  broadcast(room, { type: 'room_stats', room, count: roomCount(room) });
+function pushStats(room){
+  broadcast(room, { type:'room_stats', room, count: roomCount(room) });
 }
 
 wss.on('connection', (ws) => {
@@ -74,29 +71,24 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'join') {
       const token = String(msg.token || '').trim();
-      if (!token) {
-        ws.send(JSON.stringify({ type: 'error', error: 'missing-token' }));
-        return;
-      }
+      if (!token) { ws.send(JSON.stringify({ type:'error', error:'missing-token' })); return; }
       if (!ALLOWED.has(token)) {
-        ws.send(JSON.stringify({ type: 'error', error: 'forbidden-token' }));
+        ws.send(JSON.stringify({ type:'error', error:'forbidden-token' }));
         try { ws.close(1008, 'forbidden token'); } catch {}
         return;
       }
-      joinRoom(ws, token);                 // token == room
-      ws.send(JSON.stringify({ type: 'joined', room: token, count: roomCount(token) }));
-      pushStats(token);
+      const room = token; // token == room
+      joinRoom(ws, room);
+      ws.send(JSON.stringify({ type:'joined', room, count: roomCount(room) }));
+      pushStats(room);
       return;
     }
 
-    if (msg.type === 'ping') {
-      try { ws.send(JSON.stringify({ type: 'pong' })); } catch {}
-      return;
-    }
+    if (msg.type === 'ping') { try { ws.send(JSON.stringify({ type:'pong' })); } catch {} return; }
 
     if (msg.type === 'broadcast') {
       if (!ws.room) return;
-      broadcast(ws.room, { type: 'message', payload: msg.payload, at: Date.now() }, ws);
+      broadcast(ws.room, { type:'message', payload: msg.payload, at: Date.now() }, ws);
       return;
     }
   });
@@ -104,7 +96,6 @@ wss.on('connection', (ws) => {
   ws.on('close', () => { const r = ws.room; leaveRoom(ws); if (r) pushStats(r); });
 });
 
-// فحص نبضات/تنظيف اتصالات ميتة
 setInterval(() => {
   for (const ws of wss.clients) {
     if (!ws.isAlive) { try { ws.terminate(); } catch {} continue; }
@@ -113,7 +104,6 @@ setInterval(() => {
   }
 }, HEARTBEAT_SECONDS * 1000);
 
-// صحة سريعة
 app.get('/health', (_req, res) => {
   const roomsObj = {}; for (const [name, set] of rooms) roomsObj[name] = set.size;
   res.json({ ok: true, clients: wss.clients.size, rooms: roomsObj, allowed: Array.from(ALLOWED) });
