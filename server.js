@@ -22,7 +22,17 @@ const TOKENS_FROM_ENV = (process.env.TOKEN_LIST || '')
 // Option 2: hardcode list here if you prefer:
 const ALLOWED_TOKENS_HARDCODED = [
   "mouad",
+  "zakaria",
+  "ismail",
+  "achraf",
+  "Najoua",
+  "Wasima",
+  "mohamed",
+  "imane",
+  "najlae",
+  "nabil"
 ];
+
 
 const ALLOWED = new Set(TOKENS_FROM_ENV.length ? TOKENS_FROM_ENV : ALLOWED_TOKENS_HARDCODED);
 
